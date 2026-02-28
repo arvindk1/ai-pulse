@@ -13,10 +13,19 @@ export interface RawSignal {
         likes?: number;
         retweets?: number;
     };
+    velocity?: {
+        stars?: number;     // e.g. +3400 starts in 24h
+        downloads?: number;
+        likes?: number;
+    };
     createdAt: string;
 }
 
 export interface ProcessedSignal extends RawSignal {
     impactScore: number;
     bottomLine: string;
+    // Phase 6 Structured Intelligence
+    marketSignal?: "Bullish" | "Neutral" | "Risk";
+    targetAudience?: ("Infra" | "Dev" | "Investor")[];
+    theme?: string;
 }

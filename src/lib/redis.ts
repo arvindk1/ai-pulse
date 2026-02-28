@@ -69,7 +69,7 @@ export async function getVelocity(id: string): Promise<{ stars?: number, downloa
     try {
         // Zrange returns strings from Upstash
         const oldest = typeof snapshots[0] === 'string' ? JSON.parse(snapshots[0]) : snapshots[0] as any;
-        const newest = typeof snapshots[snapshots.length - 1] === 'string' ? JSON.parse(snapshots[snapshots.length - 1]) : snapshots[snapshots.length - 1] as any;
+        const newest = typeof snapshots[snapshots.length - 1] === 'string' ? JSON.parse(snapshots[snapshots.length - 1] as string) : snapshots[snapshots.length - 1] as any;
 
         const velocity: any = {};
         if (typeof newest.stars === 'number' && typeof oldest.stars === 'number') {

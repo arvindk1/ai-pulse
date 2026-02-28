@@ -1,3 +1,5 @@
+"use client";
+
 import { useState } from "react";
 import { ProcessedSignal } from "@/lib/types";
 import { BentoGrid, BentoGridItem } from "@/components/ui/bento-grid";
@@ -97,8 +99,8 @@ export function DashboardClient({ initialData }: { initialData: ProcessedSignal[
                         key={p}
                         onClick={() => setProfile(p)}
                         className={`px-4 py-1.5 rounded-full text-xs font-semibold tracking-wide transition-all border ${profile === p
-                                ? "bg-zinc-100 text-zinc-900 border-zinc-200 shadow-sm"
-                                : "bg-zinc-950 text-zinc-400 border-zinc-800 hover:text-zinc-200 hover:border-zinc-700 hover:bg-zinc-900"
+                            ? "bg-zinc-100 text-zinc-900 border-zinc-200 shadow-sm"
+                            : "bg-zinc-950 text-zinc-400 border-zinc-800 hover:text-zinc-200 hover:border-zinc-700 hover:bg-zinc-900"
                             }`}
                     >
                         {p === "All" ? "Global Overview" : p === "Dev" ? "Builder Console" : p === "Investor" ? "Capital & Markets" : "Enterprise Infra"}

@@ -3,17 +3,50 @@ import { google } from "@ai-sdk/google";
 import { z } from "zod";
 import { RawSignal, ProcessedSignal } from "../types";
 
-// Schema for an entire batch of signals to enforce macro-clustering
+const BATCH_SIZE = 30; // 3 parallel batches of 30 instead of 1 giant batch of 90
+
+// Schema for a single batch — smaller schema = faster Gemini response
 const BatchScoreSchema = z.object({
     signals: z.array(z.object({
-        id: z.string().describe("The exact original signal ID provided in the payload."),
-        impactScore: z.number().min(1).max(10).describe("Industry impact score 1-10. 8+ for breakthroughs/releases. Below 5 for noise."),
-        bottomLine: z.string().describe("One crisp sentence: what this is and why it matters."),
-        marketSignal: z.enum(["Bullish", "Neutral", "Risk"]).describe("Is this momentum positive, neutral, or representing a risk/challenge?"),
-        targetAudience: z.array(z.enum(["Infra", "Dev", "Investor"])).describe("Who should care about this? Pick 1-3."),
-        theme: z.string().describe("Macro cluster theme name grouping related signals together (e.g., 'Agentic Workflows', 'Model Training', 'Regulation')."),
-    })).describe("The processed array of intelligence signals. You MUST return an entry for every ID provided."),
+        id: z.string(),
+        impactScore: z.number().min(1).max(10),
+        bottomLine: z.string(),
+        marketSignal: z.enum(["Bullish", "Neutral", "Risk"]),
+        targetAudience: z.array(z.enum(["Infra", "Dev", "Investor"])),
+        theme: z.string(),
+    })),
 });
+
+async function synthesizeBatch(
+    batch: { id: string; type: string; title: string; content: string }[],
+    batchIndex: number
+): Promise<Map<string, any>> {
+    const t = Date.now();
+    try {
+        const { object } = await generateObject({
+            model: google("gemini-2.5-flash"),
+            schema: BatchScoreSchema,
+            prompt: `You are an elite AI industry analyst. Analyze this batch of ${batch.length} AI developments and for each:
+1. Impact score 1-10 (8+ for major releases, <5 for noise)
+2. One crisp bottom-line sentence
+3. Market signal: Bullish/Neutral/Risk
+4. Target audience: Infra/Dev/Investor (1-3 tags)
+5. Theme: group related items under the same name (e.g. "Agentic Workflows")
+
+Batch JSON:
+${JSON.stringify(batch)}`,
+            maxOutputTokens: 4000,
+            providerOptions: { google: { structuredOutputs: true } },
+        });
+
+        console.log(`[PERF] Gemini batch ${batchIndex}: ${Date.now() - t}ms (${batch.length} items)`);
+        const typedSignals: any[] = object.signals as any;
+        return new Map<string, any>(typedSignals.map((s: any) => [s.id, s]));
+    } catch (err) {
+        console.error(`Gemini batch ${batchIndex} failed:`, err);
+        return new Map();
+    }
+}
 
 export async function filterNoise(signals: RawSignal[]): Promise<ProcessedSignal[]> {
     if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
@@ -22,74 +55,56 @@ export async function filterNoise(signals: RawSignal[]): Promise<ProcessedSignal
             ...s,
             impactScore: 8 + (i % 3),
             bottomLine: s.content.substring(0, 120) + "...",
-            marketSignal: "Neutral",
-            targetAudience: ["Dev"],
+            marketSignal: "Neutral" as const,
+            targetAudience: ["Dev"] as ("Dev" | "Infra" | "Investor")[],
             theme: "General AI"
         })) as ProcessedSignal[];
     }
 
     if (signals.length === 0) return [];
 
-    // Strip payload down to essential text to minimize input tokens and noise
+    // Trim content to 300 chars (was 600) — cuts input tokens in half
     const payload = signals.map(s => ({
         id: s.id,
         type: s.type,
         title: s.title,
-        content: s.content.substring(0, 600), // trim raw HTML/text
+        content: s.content.substring(0, 300),
     }));
 
-    try {
-        console.log(`[Batch Synthesis] Sending ${signals.length} items to Gemini...`);
-        const { object } = await generateObject({
-            model: google("gemini-2.5-flash", { structuredOutputs: true }),
-            schema: BatchScoreSchema,
-            prompt: `You are an elite AI industry analyst building an intelligence console.
-Analyze this massive batch of ${payload.length} recent AI developments. 
-1. Score their industry impact (1-10).
-2. Write a crisp bottom-line that cuts through the hype.
-3. Classify their market signal (Bullish/Neutral/Risk).
-4. Tag the target audience (Infra/Dev/Investor).
-5. CLUSTER THEM: Assign the exact same 'theme' string to related items (e.g., if two items are about robots, theme them both 'Robotics & Embodied AI').
-
-Batch Data (JSON):
-${JSON.stringify(payload)}`,
-            maxTokens: 8000,
-        });
-
-        // Merge AI clustered results back with the original raw objects
-        const typedSignals: any[] = object.signals as any;
-        const aiMap = new Map<string, any>(typedSignals.map((s: any) => [s.id, s]));
-
-        const processed: ProcessedSignal[] = [];
-
-        for (const signal of signals) {
-            const aiData = aiMap.get(signal.id);
-            // Drop signals Gemini ignored or scored strictly below our noise threshold of 5
-            if (!aiData || typeof aiData.impactScore !== 'number' || aiData.impactScore < 5) continue;
-
-            processed.push({
-                ...signal,
-                impactScore: aiData.impactScore,
-                bottomLine: aiData.bottomLine,
-                marketSignal: aiData.marketSignal,
-                targetAudience: aiData.targetAudience,
-                theme: aiData.theme,
-            });
-        }
-
-        console.log(`[Batch Synthesis] Returned ${processed.length} high-signal items.`);
-        return processed.sort((a, b) => b.impactScore - a.impactScore);
-
-    } catch (err) {
-        console.error("Batch synthesis failed:", err);
-        // Fallback gracefully on timeout/length limit issues
-        return signals.map((s, i) => ({
-            ...s,
-            impactScore: 7,
-            bottomLine: s.content.substring(0, 150) + (s.content.length > 150 ? "..." : ""),
-            marketSignal: "Bullish",
-            targetAudience: ["Dev", "Investor"],
-            theme: "Uncategorized",
-        })) as ProcessedSignal[];
+    // Split into parallel batches
+    const batches: typeof payload[] = [];
+    for (let i = 0; i < payload.length; i += BATCH_SIZE) {
+        batches.push(payload.slice(i, i + BATCH_SIZE));
     }
+
+    const tAll = Date.now();
+    console.log(`[Batch Synthesis] ${signals.length} signals → ${batches.length} parallel batches of ~${BATCH_SIZE}`);
+
+    // Fire all batches concurrently
+    const batchMaps = await Promise.all(batches.map((b, i) => synthesizeBatch(b, i)));
+
+    // Merge all result maps
+    const aiMap = new Map<string, any>();
+    for (const m of batchMaps) {
+        for (const [k, v] of m) aiMap.set(k, v);
+    }
+    console.log(`[PERF] All Gemini batches done: ${Date.now() - tAll}ms`);
+
+    // Merge AI results back with original signals
+    const processed: ProcessedSignal[] = [];
+    for (const signal of signals) {
+        const aiData = aiMap.get(signal.id);
+        if (!aiData || typeof aiData.impactScore !== 'number' || aiData.impactScore < 5) continue;
+        processed.push({
+            ...signal,
+            impactScore: aiData.impactScore,
+            bottomLine: aiData.bottomLine,
+            marketSignal: aiData.marketSignal,
+            targetAudience: aiData.targetAudience,
+            theme: aiData.theme,
+        });
+    }
+
+    console.log(`[Batch Synthesis] Returned ${processed.length} high-signal items.`);
+    return processed.sort((a, b) => b.impactScore - a.impactScore);
 }

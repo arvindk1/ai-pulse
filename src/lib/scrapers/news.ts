@@ -17,10 +17,6 @@ const NEWS_FEEDS = [
         source: "VentureBeat AI",
     },
     {
-        url: "https://feeds.reuters.com/reuters/technologyNews",
-        source: "Reuters Tech",
-    },
-    {
         url: "https://www.axios.com/feeds/feed.rss",
         source: "Axios",
     },
